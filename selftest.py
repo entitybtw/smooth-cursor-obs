@@ -378,6 +378,24 @@ def check_custom_cursor():
     assert img.width == round(lg.custom["custom0"]["ref"] * 2) and img.getchannel("A").getextrema()[1] == 255
     img2, _ = wc.cursor_sprite("custom0", round(lg.ref * 2), custom, app_scale=1.5)  # «Курсоры программ» × 1.5
     assert abs(img2.width - img.width * 1.5) <= 1, (img.width, img2.width)
+    # не квадратный (перетаскивание в Qt/DaVinci): снимаем как есть, а не растягиваем в квадрат по ширине
+    w, ht, bits = 90, 30, wc.C.c_void_p()
+    bmi = wc.BITMAPINFOHEADER(biSize=wc.C.sizeof(wc.BITMAPINFOHEADER), biWidth=w, biHeight=-ht, biPlanes=1, biBitCount=32)
+    color = wc.gdi32.CreateDIBSection(None, wc.C.byref(bmi), 0, wc.C.byref(bits), None, 0)
+    px = (wc.C.c_uint32 * (w * ht)).from_address(bits.value)
+    for y in range(ht):
+        for x in range(10):
+            px[y * w + x] = 0xFFFF0000  # левые 10 столбцов — красные, остальное прозрачно
+    wc.gdi32.CreateBitmap.restype = wc.W.HBITMAP
+    mask = wc.gdi32.CreateBitmap(w, ht, 1, 1, None)
+    wc.user32.CreateIconIndirect.restype = wc.C.c_void_p
+    hc = wc.user32.CreateIconIndirect(wc.C.byref(wc.ICONINFO(False, 5, 20, mask, color)))
+    img, hot = wc.handle_sprite(hc)
+    wc.user32.DestroyCursor(hc)
+    wc.gdi32.DeleteObject(mask)
+    wc.gdi32.DeleteObject(color)
+    assert img.size == (w, ht) and hot == (5, 20), (img.size, hot)
+    assert img.getpixel((2, 25))[3] == 255 and img.getpixel((50, 15))[3] == 0, "картинка не растянута"
     print("свой курсор программы: ок")
 
 

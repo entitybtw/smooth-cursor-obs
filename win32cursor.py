@@ -304,16 +304,16 @@ def cursor_base_size():
         return 32
 
 
-def _draw(h, size, bg):
+def _draw(h, w, ht, bg):
     dc = gdi32.CreateCompatibleDC(None)
     bits = C.c_void_p()
-    bmi = BITMAPINFOHEADER(biSize=C.sizeof(BITMAPINFOHEADER), biWidth=size, biHeight=-size, biPlanes=1, biBitCount=32)
+    bmi = BITMAPINFOHEADER(biSize=C.sizeof(BITMAPINFOHEADER), biWidth=w, biHeight=-ht, biPlanes=1, biBitCount=32)
     bmp = gdi32.CreateDIBSection(dc, C.byref(bmi), 0, C.byref(bits), None, 0)
     old = gdi32.SelectObject(dc, bmp)
-    C.memset(bits, bg, size * size * 4)
-    user32.DrawIconEx(dc, 0, 0, h, size, size, 0, None, 3)  # DI_NORMAL
+    C.memset(bits, bg, w * ht * 4)
+    user32.DrawIconEx(dc, 0, 0, h, w, ht, 0, None, 3)  # DI_NORMAL
     gdi32.GdiFlush()
-    px = np.frombuffer(C.string_at(bits, size * size * 4), np.uint8).reshape(size, size, 4)[..., 2::-1].astype(float)
+    px = np.frombuffer(C.string_at(bits, w * ht * 4), np.uint8).reshape(ht, w, 4)[..., 2::-1].astype(float)
     gdi32.SelectObject(dc, old)
     gdi32.DeleteObject(bmp)
     gdi32.DeleteDC(dc)
@@ -449,17 +449,20 @@ def snapshot(h, ref):
 
 
 def handle_sprite(h, size=0):
-    """Курсор по HCURSOR (в т. ч. чужой программы) как RGBA size×size и hotspot; size=0 — родной размер."""
+    """Курсор по HCURSOR (в т. ч. чужой программы) как RGBA и hotspot: ширина size, высота в пропорции; size=0 —
+    родной размер. Курсор бывает не квадратным: при перетаскивании Qt (DaVinci) — стрелка с картинкой, 261×90."""
     ii, bm = ICONINFO(), BITMAP()
     if not user32.GetIconInfo(h, C.byref(ii)):
         return None
     gdi32.GetObjectW(ii.hbmMask, C.sizeof(BITMAP), C.byref(bm))
+    nh = bm.bmHeight if ii.hbmColor else bm.bmHeight // 2  # у монохромного маска — AND и XOR друг под другом
     size = size or bm.bmWidth
-    hot = (ii.xHotspot * size / bm.bmWidth, ii.yHotspot * size / bm.bmWidth)
+    ht = max(1, round(nh * size / bm.bmWidth))
+    hot = (ii.xHotspot * size / bm.bmWidth, ii.yHotspot * ht / nh)
     for b in (ii.hbmMask, ii.hbmColor):
         if b:
             gdi32.DeleteObject(b)
-    black, white = _draw(h, size, 0), _draw(h, size, 255)
+    black, white = _draw(h, size, ht, 0), _draw(h, size, ht, 255)
 
     diff = (white - black).mean(-1)  # = 255·(1−α); у инвертирующих пикселей отрицательно
     a = np.clip(1 - diff / 255, 0, 1)
@@ -470,7 +473,7 @@ def handle_sprite(h, size=0):
         pad = np.pad(inv, 1)
         for dy in range(3):
             for dx in range(3):
-                near |= pad[dy:dy + size, dx:dx + size]
+                near |= pad[dy:dy + ht, dx:dx + size]
         ring = near & ~inv & (a == 0)
         a[inv], rgb[inv] = 1, 0
         a[ring], rgb[ring] = 1, 255
