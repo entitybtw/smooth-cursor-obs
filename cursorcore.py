@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 from i18n import t
@@ -55,7 +56,30 @@ def custom_sprite(c, size):
     img = Image.open(io.BytesIO(base64.b64decode(c["png"]))).convert("RGBA")
     k = size / c["ref"]
     w, h = max(1, round(img.width * k)), max(1, round(img.height * k))
-    return img.resize((w, h), Image.LANCZOS), (c["hot"][0] * w / img.width, c["hot"][1] * h / img.height)
+    return crisp_resize(img, w, h), (c["hot"][0] * w / img.width, c["hot"][1] * h / img.height)
+
+
+def crisp_resize(img, w, h):
+    """RGBA в w×h. Крупнее исходника — без лесенки и мыла: бикубика, потом каждый край стягиваем до ~1 px между
+    соседними цветами (локальные мин/макс), так плоские цвета и сглаживание исходника не портятся. Нужно курсорам
+    программ: Figma и т. п. отдают маленькую битмапу (32–48 px), а на 4K/DSR её растягиваем в разы.
+    ponytail: острые углы слегка скругляются — потолок любого апскейла растра; лучше только вектор от программы."""
+    k = w / img.width
+    if k <= 1:
+        return img.resize((w, h), Image.LANCZOS)
+    up = img.convert("RGBa").resize((w, h), Image.BICUBIC)  # с умноженной альфой: прозрачный цвет не протекает
+    n = 2 * int(np.ceil(k)) + 1  # окно — по исходному пикселю в каждую сторону, накрывает весь переход
+    win = np.lib.stride_tricks.sliding_window_view
+    pad = lambda x, ax: np.pad(x, [(n // 2, n // 2) if i == ax else (0, 0) for i in range(2)], "edge")
+    # мин/макс по квадрату n×n раздельно, строки и столбцы: n операций на пиксель вместо n² (у PIL MinFilter)
+    rank = lambda x, f: f(win(pad(f(win(pad(x, 1), n, 1), -1), 0), n, 0), -1)
+    bands = []
+    for b in up.split():
+        x = np.asarray(b, float)
+        lo, hi = rank(x, np.min), rank(x, np.max)
+        t = np.clip(((x - lo) / np.maximum(hi - lo, 1e-6) - 0.5) * k + 0.5, 0, 1)
+        bands.append(Image.fromarray((lo + (hi - lo) * t).round().astype(np.uint8), "L"))
+    return Image.merge("RGBa", bands).convert("RGBA")
 
 
 # Свой набор курсоров: вид → регулярка по имени файла, как их называют паки курсоров для Windows

@@ -400,6 +400,12 @@ def check_custom_cursor():
     wc.gdi32.DeleteObject(color)
     assert img.size == (w, ht) and hot == (5, 20), (img.size, hot)
     assert img.getpixel((2, 25))[3] == 255 and img.getpixel((50, 15))[3] == 0, "картинка не растянута"
+    # растянутый в 4 раза мелкий курсор (Figma на 4K): края ~1 px, а не ступеньки по 4 px и не мыло
+    sq = Image.new("RGBA", (16, 16))
+    sq.paste((0, 0, 0, 255), (4, 4, 12, 12))
+    a = np.asarray(cursorcore.crisp_resize(sq, 64, 64).getchannel("A"), int)
+    assert ((a > 10) & (a < 245)).sum(1).max() <= 4, "край шире пикселя"
+    assert a[32, 15] < 128 < a[32, 16] and a[32, 32] == 255 and a[32, 2] == 0
     print("свой курсор программы: ок")
 
 
