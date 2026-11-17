@@ -176,7 +176,7 @@ EN.update({
     "не удалось скачать ffmpeg: {}": "could not download ffmpeg: {}", "загрузка отменена": "download cancelled",
     # --- записи ---
     "ПАПКА ЗАПИСЕЙ": "RECORDINGS FOLDER", "Изменить…": "Change…", "Обновить список": "Refresh list",
-    "ЗАПИСЬ": "RECORDING", "ДАТА": "DATE", "ПЛАВНЫЙ КУРСОР": "SMOOTH CURSOR", "готово": "done",
+    "ЗАПИСЬ": "RECORDING", "ДЛИТЕЛЬНОСТЬ": "DURATION", "ДАТА": "DATE", "ПЛАВНЫЙ КУРСОР": "SMOOTH CURSOR", "готово": "done",
     "с": "from", "сек, длиной": "s, length", "сек": "s", "В папке": "Show in folder", "Исходник": "Source",
     "Открыть": "Open", "Выберите запись в списке.": "Select a recording in the list.",
     "Эта запись ещё не отрендерена — нажмите «Рендер».": "This recording hasn't been rendered yet — press “Render”.",

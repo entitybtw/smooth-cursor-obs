@@ -424,13 +424,12 @@ def piecewise(vals, n0, fps, t0):
     return e
 
 
-def write_commands(path, track, info, types, slots, clip, blur=None):
-    """sendcmd: на каждом кадре двигаем только изменившиеся overlay. Координаты — уже в пикселях видео
-    (vx, vy, vghosts, raw_vx). clip = (начало, конец) в секундах. blur — {кадр: левый верхний угол} слоя
-    точного motion blur: тогда курсор рисует он, а не спрайты со шлейфом из копий."""
-    hot = {name: (hx, hy) for name, _, hx, hy in slots}
+def write_commands(path, track, info, slots, clip, blur):
+    """sendcmd: на каждом кадре двигаем только изменившиеся overlay. clip = (начало, конец) в секундах.
+    blur — {кадр: левый верхний угол} слоя с курсором (см. blur_plan); спрайт — только отладочный сырой курсор
+    (raw_vx — уже в пикселях видео)."""
+    hot = {name: (hx, hy) for name, _, hx, hy in slots if name != "blur"}
     fps, (t0, t1) = info["fps"], clip
-    n_ghosts = len(track["vghosts"])
     state = {name: None for name in hot}
     pos = lambda k: blur.get(k, (HIDE, 0))
     empty = True
@@ -439,17 +438,6 @@ def write_commands(path, track, info, types, slots, clip, blur=None):
             if not t0 - 1 / fps <= n / fps <= t1 + 1 / fps:
                 continue
             want = {}
-            t, main = sprite_name(track, n, types, hot)
-            if blur is not None:
-                pass  # слой точного блюра двигаем ниже — отдельными командами
-            elif track["visible"][n]:
-                x, y, lvl = track["vx"][n], track["vy"][n], track["level"][n]
-                want[main] = (x, y)
-                # Шлейф только в движении и не во время анимации клика: несжатые «призраки» торчали бы из-под
-                # наклонённого курсора, а в покое утолщали бы его края.
-                for gi, (gx, gy) in enumerate(track["vghosts"]):
-                    if lvl == 0 and not track["morph"][n] and abs(gx[n] - x) + abs(gy[n] - y) > 0.5:
-                        want[f"g{n_ghosts - 1 - gi}_{t}{tilt_tag(ghost_tilt(track['tilt'][n]))}"] = (gx[n], gy[n])
             if "raw" in hot and 0 <= track["raw_x"][n] < info["dw"] and 0 <= track["raw_y"][n] < info["dh"]:
                 want["raw"] = (track["raw_vx"][n], track["raw_vy"][n])
             cmds = []
@@ -461,7 +449,7 @@ def write_commands(path, track, info, types, slots, clip, blur=None):
                 if new != cur:
                     cmds += [f"overlay@{name} x {new[0]}", f"overlay@{name} y {new[1]}"] if new else [f"overlay@{name} x {HIDE}"]
                     state[name] = new
-            if blur is not None and pos(n) != pos(n - 1):
+            if pos(n) != pos(n - 1):
                 # Вход слоя — поток, и ffmpeg, прежде чем смешать кадр, заглядывает в следующий: команда кадра n
                 # срабатывает до того, как смешаны прошлые. Поэтому позиция — функция времени кадра t с запасом
                 # на BLUR_LAG кадров назад: каждый кадр берёт свою, когда бы команда ни сработала.
@@ -475,58 +463,114 @@ def write_commands(path, track, info, types, slots, clip, blur=None):
                 f.write(f"{ts:.6f}-{ts + 1:.6f} {', '.join(cmds)};\n")
                 empty = False
         if empty:  # курсор всю запись на другом мониторе, а пустой список sendcmd считает ошибкой
-            f.write(f"0.000000-1.000000 overlay@{next(iter(hot))} x {HIDE};\n")
+            f.write(f"0.000000-1.000000 overlay@blur x {HIDE};\n")
 
 
 BLUR_CAP, BLUR_SAMPLES = 512, 256  # точный motion blur: слой не больше 512 px, до 256 выборок за выдержку
 
 
-def blur_plan(track, sprites, types, fps, rc, grid, f0, f1):
-    """Точный motion blur, как у камеры: курсор усреднён по всем моментам выдержки [t − 1/shutter с, t]
-    с шагом ≈ 1 px пути, а не нарисован отдельными копиями. Каждый кадр курсора — готовый слой RGBA.
+def blur_plan(track, sprites, types, fps, rc, grid, f0, f1, ghost_ms=()):
+    """Курсор — один слой RGBA на кадр, считаем его здесь. Позиция дробная: спрайты через overlay в 4:2:0 встают
+    только на чётный пиксель, и на медленном доводе курсор шёл бы ступеньками по 2 px.
 
+    Режимы: точный motion blur, как у камеры (blur_accurate) — курсор усреднён по всем моментам выдержки
+    [t − 1/shutter с, t] с шагом ≈ 1 px пути; шлейф копий (ghost_ms — насколько раньше «призраки») — бледные копии
+    под курсором; иначе — просто курсор.
     sprites: {имя: (RGBA float32, hotspot)}; grid: (время мс, x, y, виден) траектории с шагом 1 мс в пикселях
     видео; f0…f1 — нужные кадры. Возвращает (ширина, высота слоя, {кадр: левый верхний угол}, байты слоёв).
     Хвост длиннее BLUR_CAP обрезается: при такой скорости он почти прозрачный."""
     tg, gx, gy, gv = grid
-    S, tf = 1000 / rc["shutter"], track["t"]  # выдержка в мс: 1/60 с → 16.7
+    accurate = rc["motion_blur"] and rc["blur_accurate"]
+    S, tf = (1000 / rc["shutter"] if accurate else max(ghost_ms, default=0)), track["t"]  # выдержка / длина шлейфа, мс
+    n_ghosts = len(ghost_ms)
     prem = {}  # спрайты с премультиплицированной альфой: их можно просто складывать
     for name, (img, hot) in sprites.items():
         a = img[..., 3:] / 255
         prem[name] = (np.concatenate([img[..., :3] * a, a], -1).astype(np.float32), hot)
-    sw = max(p.shape[1] for p, _ in prem.values()) + 2
-    sh = max(p.shape[0] for p, _ in prem.values()) + 2
+    # +4: пиксель на субпиксельный сдвиг и пиксель на чётный угол слоя (overlay в 4:2:0 округляет его до чётного)
+    sw = max(p.shape[1] for p, _ in prem.values()) + 4
+    sh = max(p.shape[0] for p, _ in prem.values()) + 4
     m1 = min(f1, len(tf))  # дальше конца видео — пустые слои (запас, чтобы конец задавало видео)
     # длина пути за выдержку: по ней число выборок и размер слоя (по 99.5% кадров, чтобы один рывок не раздул все)
     probe = tf[f0:m1, None] - S * np.linspace(0, 1, 9)
     px, py = np.interp(probe, tg, gx), np.interp(probe, tg, gy)
-    k = np.clip(np.ceil(np.hypot(np.diff(px), np.diff(py)).sum(1)), 1, BLUR_SAMPLES).astype(int)
+    k = np.clip(np.ceil(np.hypot(np.diff(px), np.diff(py)).sum(1)), 1, BLUR_SAMPLES).astype(int) if accurate \
+        else np.ones(m1 - f0, int)
     vis = track["visible"][f0:m1]
     pw, ph = sw, sh
     if vis.any():
         pw = int(np.clip(np.percentile(np.ptp(px[vis], 1), 99.5) + sw, sw, BLUR_CAP))
         ph = int(np.clip(np.percentile(np.ptp(py[vis], 1), 99.5) + sh, sh, BLUR_CAP))
+    q = lambda v: np.round(v * 16) / 16  # 1/16 px хватает; заодно курсор в покое — ровно на пикселе, без мыла
 
-    def samples(f):
-        """Левые верхние углы спрайта во все моменты выдержки кадра f, где курсор был виден (первый — сейчас)."""
-        p, (hx, hy) = prem[names[f]]
-        ts = tf[f] - S * np.arange(k[f - f0]) / k[f - f0]
-        keep = gv[np.clip(np.round((ts - tg[0]) / smoothing.STEP_MS).astype(int), 0, len(tg) - 1)]
-        return (np.round(np.interp(ts[keep], tg, gx) - hx).astype(int),
-                np.round(np.interp(ts[keep], tg, gy) - hy).astype(int))
+    def at(ts, name):
+        """Левые верхние углы спрайта в моменты ts. Хотспот — целый: в покое (рука на целом пикселе) курсор резкий,
+        а не размазан на полпикселя."""
+        hx, hy = prem[name][1]
+        return q(np.interp(ts, tg, gx) - round(hx)), q(np.interp(ts, tg, gy) - round(hy))
+
+    def stamps(f):
+        """Что рисовать в кадре f снизу вверх: [(спрайт, x, y, вес)]; выборки одного спрайта складываются с весами,
+        а следующий спрайт ложится поверх. Последний — сам курсор (первая его выборка — нынешний момент)."""
+        main = names[f]
+        if accurate:
+            ts = tf[f] - S * np.arange(k[f - f0]) / k[f - f0]
+            ts = ts[gv[np.clip(np.round((ts - tg[0]) / smoothing.STEP_MS).astype(int), 0, len(tg) - 1)]]
+            return [(main, *at(ts, main), np.full(len(ts), 1 / k[f - f0]))]
+        x, y = at(tf[f:f + 1], main)
+        out = []
+        # шлейф только в движении и не во время анимации клика: несжатые «призраки» торчали бы из-под наклонённого
+        # курсора, а в покое утолщали бы его края
+        if n_ghosts and track["level"][f] == 0 and not track["morph"][f]:
+            t = sprite_name(track, f, types, prem)[0]
+            for gi in range(n_ghosts - 1, -1, -1):  # дальние, бледные — снизу
+                g = f"g{n_ghosts - 1 - gi}_{t}{tilt_tag(ghost_tilt(track['tilt'][f]))}"
+                gxs, gys = at(tf[f:f + 1] - ghost_ms[gi], g if g in prem else main)
+                if g in prem and abs(gxs[0] - x[0]) + abs(gys[0] - y[0]) > 0.5:
+                    out.append((g, gxs, gys, np.ones(1)))
+        return out + [(main, x, y, np.ones(1))]
 
     names, origin = {}, {}
     for f in range(f0, m1):
         if track["visible"][f]:
             names[f] = sprite_name(track, f, types, prem)[1]
-            xs, ys = samples(f)
-            if not xs.size:  # в момент кадра курсор виден, так что сюда не попадаем — но без падения
+            st = stamps(f)
+            if not st[-1][1].size:  # в момент кадра курсор виден, так что сюда не попадаем — но без падения
                 del names[f]
                 continue
             h, w = prem[names[f]][0].shape[:2]
-            # слой целиком вмещает след; если не вмещает — ведущий (нынешний) курсор целый, обрезается хвост
-            origin[f] = (int(min(max(xs.min(), xs[0] + w - pw), xs[0])),
-                         int(min(max(ys.min(), ys[0] + h - ph), ys[0])))
+            xs = np.floor(np.concatenate([s[1] for s in st]))
+            ys = np.floor(np.concatenate([s[2] for s in st]))
+            x0, y0 = np.floor(st[-1][1][0]), np.floor(st[-1][2][0])
+            # слой целиком вмещает след; если не вмещает — ведущий (нынешний) курсор целый, обрезается хвост.
+            # Угол — чётный: overlay в 4:2:0 сам округлил бы нечётный, и курсор прыгал бы на пиксель
+            ox = int(min(max(xs.min(), x0 + w + 2 - pw), x0))
+            oy = int(min(max(ys.min(), y0 + h + 2 - ph), y0))
+            origin[f] = (ox - ox % 2, oy - oy % 2)
+
+    def splat(p, xs, ys, ws):
+        """Спрайт в дробных точках xs, ys (относительно слоя) с весами ws: каждую раскладываем на 4 соседних целых
+        положения с билинейными весами. Возвращает (рамка x0, y0, x1, y1, сумма) — или None, если вне слоя."""
+        h, w = p.shape[:2]
+        ix, iy = np.floor(xs).astype(int), np.floor(ys).astype(int)
+        fx, fy = xs - ix, ys - iy
+        cx = np.concatenate([ix, ix + 1, ix, ix + 1])
+        cy = np.concatenate([iy, iy, iy + 1, iy + 1])
+        cw = np.concatenate([(1 - fx) * (1 - fy) * ws, fx * (1 - fy) * ws, (1 - fx) * fy * ws, fx * fy * ws])
+        nz = cw > 1e-6
+        pos, inv = np.unique(np.stack([cx[nz], cy[nz]], 1), axis=0, return_inverse=True)
+        cnt = np.zeros(len(pos))
+        np.add.at(cnt, inv.ravel(), cw[nz])
+        bx0, by0 = max(pos[:, 0].min(), 0), max(pos[:, 1].min(), 0)
+        bx1, by1 = min(pos[:, 0].max() + w, pw), min(pos[:, 1].max() + h, ph)
+        if bx0 >= bx1 or by0 >= by1:
+            return None
+        acc = np.zeros((by1 - by0, bx1 - bx0, 4), np.float32)
+        for (x, y), c in zip(pos.tolist(), cnt.tolist()):
+            x0, y0, x1, y1 = max(x, bx0), max(y, by0), min(x + w, bx1), min(y + h, by1)
+            if x0 < x1 and y0 < y1:
+                acc[y0 - by0:y1 - by0, x0 - bx0:x1 - bx0] += p[y0 - y:y1 - y, x0 - x:x1 - x] * c
+        return bx0, by0, bx1, by1, acc
 
     def layers():
         empty, still = bytes(pw * ph * 4), {}
@@ -534,29 +578,31 @@ def blur_plan(track, sprites, types, fps, rc, grid, f0, f1):
             if f not in names:
                 yield empty
                 continue
-            p, _ = prem[names[f]]
-            h, w = p.shape[:2]
-            xs, ys = samples(f)
-            xs, ys = xs - origin[f][0], ys - origin[f][1]
-            static = len(xs) == k[f - f0] and not (xs.any() or ys.any())  # курсор стоит — просто спрайт
-            if static and names[f] in still:
-                yield still[names[f]]
+            st = stamps(f)
+            ox, oy = origin[f]
+            st = [(n, xs - ox, ys - oy, ws) for n, xs, ys, ws in st]
+            # курсор стоит — тот же слой, что в прошлый раз на этом месте
+            n, xs, ys, ws = st[0]
+            key = (n, xs[0], ys[0]) if len(st) == 1 and np.ptp(xs) == np.ptp(ys) == 0 and abs(ws.sum() - 1) < 1e-6 \
+                else None
+            if key in still:
+                yield still[key]
                 continue
-            bx0, by0 = max(xs.min(), 0), max(ys.min(), 0)
-            bx1, by1 = min(xs.max() + w, pw), min(ys.max() + h, ph)
-            acc = np.zeros((by1 - by0, bx1 - bx0, 4), np.float32)
-            pos, cnt = np.unique(np.stack([xs, ys], 1), axis=0, return_counts=True)
-            for (x, y), c in zip(pos.tolist(), cnt.tolist()):
-                x0, y0, x1, y1 = max(x, bx0), max(y, by0), min(x + w, bx1), min(y + h, by1)
-                if x0 < x1 and y0 < y1:
-                    acc[y0 - by0:y1 - by0, x0 - bx0:x1 - bx0] += p[y0 - y:y1 - y, x0 - x:x1 - x] * c
-            out = np.zeros((ph, pw, 4), np.uint8)
-            a = acc[..., 3]
-            out[by0:by1, bx0:bx1, :3] = np.clip(acc[..., :3] / np.maximum(a, 1e-6)[..., None] + 0.5, 0, 255)
-            out[by0:by1, bx0:bx1, 3] = np.clip(a * (255 / k[f - f0]) + 0.5, 0, 255)  # доля выдержки, когда виден
-            buf = out.tobytes()
-            if static:
-                still[names[f]] = buf
+            out = np.zeros((ph, pw, 4), np.float32)  # премультиплицированный, альфа 0…1
+            for n, xs, ys, ws in st:  # следующий спрайт — поверх: out = src + out·(1 − α src)
+                s = splat(prem[n][0], xs, ys, ws)
+                if s:
+                    bx0, by0, bx1, by1, acc = s
+                    box = out[by0:by1, bx0:bx1]
+                    box *= 1 - acc[..., 3:]
+                    box += acc
+            a = out[..., 3]
+            res = np.zeros((ph, pw, 4), np.uint8)
+            res[..., :3] = np.clip(out[..., :3] / np.maximum(a, 1e-6)[..., None] + 0.5, 0, 255)
+            res[..., 3] = np.clip(a * 255 + 0.5, 0, 255)  # точный блюр: доля выдержки, когда виден
+            buf = res.tobytes()
+            if key is not None:
+                still[key] = buf
             yield buf
 
     return pw, ph, origin, layers()
@@ -689,11 +735,11 @@ def render(video, log_path, cfg, progress=None, clip=None, hwaccel=True):
     morphs = {(types[a], types[b], m, ghost_tilt(k))  # наклон — шагом шлейфа: слоёв в ffmpeg в разы меньше
               for a, b, m, k in zip(*(track[c][mv].tolist() for c in ("prev", "type", "morph", "tilt")))}
     if clip:
-        out = Path(tempfile.gettempdir()) / f"{video.stem}_preview.mp4"
+        out = Path(tempfile.gettempdir()) / f"{video.stem}_preview{out_ext(codec)}"
         try:
             out.unlink(missing_ok=True)
         except OSError:  # прошлое превью ещё открыто в плеере
-            out = out.with_name(f"{video.stem}_preview_{time.strftime('%H%M%S')}.mp4")
+            out = out.with_name(f"{video.stem}_preview_{time.strftime('%H%M%S')}{out_ext(codec)}")
     else:
         out = video.with_name(video.stem + ("_smooth_debug" if rc["debug_raw"] else "_smooth") + out_ext(codec))
         if rc["export_keyframes"]:
@@ -703,21 +749,23 @@ def render(video, log_path, cfg, progress=None, clip=None, hwaccel=True):
         work = Path(tmp)
         slots = make_sprites(work, used, poses, size, {**rc, "motion_blur": rc["motion_blur"] and not accurate},
                              lg.get("custom"), morphs)
-        blur = layers = None
-        if accurate:  # курсор — один слой, кадры которого считаем здесь и подаём ffmpeg через stdin
-            sprites = {name: (np.asarray(Image.open(work / png), np.float32), (hx, hy))
-                       for name, png, hx, hy in slots if name != "raw"}
-            slots = [("blur", None, 0, 0)] + [s for s in slots if s[0] == "raw"]
-            f0 = int(np.ceil(span[0] * fps - 1e-6)) if clip else 0  # первый кадр превью
-            f1 = (int(span[1] * fps) + 3 if clip else info["frames"]) + 2  # слоёв — с запасом: конец задаёт видео
-            tg, sx, sy, gvis = track["path"]
-            gv = gvis & (sx >= cl) & (sx < cr) & (sy >= ct) & (sy < cb)
-            pw, ph, blur, layers = blur_plan(track, sprites, types, fps, rc, (tg, *to_video(sx, sy), gv), f0, f1)
+        # курсор — один слой, кадры которого считаем здесь и подаём ffmpeg через stdin: так он встаёт куда надо
+        # с точностью до долей пикселя, а спрайты через overlay в 4:2:0 — только на чётный пиксель
+        sprites = {name: (np.asarray(Image.open(work / png), np.float32), (hx, hy))
+                   for name, png, hx, hy in slots if name != "raw"}
+        slots = [("blur", None, 0, 0)] + [s for s in slots if s[0] == "raw"]
+        f0 = int(np.ceil(span[0] * fps - 1e-6)) if clip else 0  # первый кадр превью
+        f1 = (int(span[1] * fps) + 3 if clip else info["frames"]) + 2  # слоёв — с запасом: конец задаёт видео
+        tg, sx, sy, gvis = track["path"]
+        gv = gvis & (sx >= cl) & (sx < cr) & (sy >= ct) & (sy < cb)
+        pw, ph, blur, layers = blur_plan(track, sprites, types, fps, rc, (tg, *to_video(sx, sy), gv), f0, f1,
+                                         ghost_ms)
+        if accurate:
             log.info(t("Точный motion blur: выдержка 1/%d с, слой %dx%d px"), rc["shutter"], pw, ph)
-            blur_in = ["-f", "rawvideo", "-pixel_format", "rgba", "-video_size", f"{pw}x{ph}", "-framerate",
-                       info["rate"], "-i", "pipe:0"]
-            blur_off = (f0 - 0.5) / fps - span[0]
-        write_commands(work / "cmds.txt", track, info, types, slots, span, blur)
+        blur_in = ["-f", "rawvideo", "-pixel_format", "rgba", "-video_size", f"{pw}x{ph}", "-framerate",
+                   info["rate"], "-i", "pipe:0"]
+        blur_off = (f0 - 0.5) / fps - span[0]
+        write_commands(work / "cmds.txt", track, info, slots, span, blur)
         # Накладываем прямо в YUV исходника: через RGB (format=auto) цвета видео чуть съезжают
         pf = info["pix_fmt"]
         sub = "444" if "444" in pf else "422" if "422" in pf else "420"

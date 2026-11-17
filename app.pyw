@@ -1187,6 +1187,7 @@ class App:
         self.detected, self.last_fps, self.log_lines, self.log_win = None, self.cfg["ui"]["obs_fps"], [], None
         self.spec, self.page, self.encoder, self.onboarding = {"obs": "offline"}, "rec", None, None
         self.encoder_src = None  # для какого пути к ffmpeg определён кодировщик
+        self.durations, self.probing = {}, False  # длительность записей в списке: лог → «м:сс»
         self.ffmpeg_installing = self.ffmpeg_asked = False
         i18n.LANG = self.cfg["ui"]["lang"]
 
@@ -1897,9 +1898,9 @@ class App:
 
         lf = tk.Frame(p, bg=BG, highlightthickness=1, highlightbackground=LINE)
         lf.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(lf, columns=("date", "result"), selectmode="extended", height=4)
-        for col, title, w, anchor in (("#0", t("ЗАПИСЬ"), 520, "w"), ("date", t("ДАТА"), 200, "center"),
-                                      ("result", t("ПЛАВНЫЙ КУРСОР"), 200, "center")):
+        self.tree = ttk.Treeview(lf, columns=("dur", "date", "result"), selectmode="extended", height=4)
+        for col, title, w, anchor in (("#0", t("ЗАПИСЬ"), 400, "w"), ("dur", t("ДЛИТЕЛЬНОСТЬ"), 120, "center"),
+                                      ("date", t("ДАТА"), 200, "center"), ("result", t("ПЛАВНЫЙ КУРСОР"), 200, "center")):
             self.tree.heading(col, text=title, anchor=anchor)
             self.tree.column(col, width=w, anchor=anchor)
         sb = ttk.Scrollbar(lf, command=self.tree.yview)
@@ -2753,14 +2754,42 @@ class App:
         keep = set(self.tree.selection())
         self.tree.delete(*self.tree.get_children())
         logs = sorted(folder.glob("*.cursor.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        missing = []
         for lp in logs:
             stem = lp.name[:-len(".cursor.json")]
             smooth = render.smooth_file(folder / stem)
+            dur = self.durations.get(str(lp))
+            if dur is None:
+                missing.append(lp)
             self.tree.insert("", "end", iid=str(lp), text=stem, values=(
+                "…" if dur is None else dur,
                 time.strftime("%d.%m.%Y  %H:%M", time.localtime(lp.stat().st_mtime)),
                 t("готово") if smooth.exists() else "—"))
         sel = [i for i in keep if self.tree.exists(i)] or ([str(logs[0])] if logs else [])
         self.tree.selection_set(sel)
+        if missing and not self.probing:  # ffprobe по десяткам файлов — не в потоке окна
+            self.probing = True
+            threading.Thread(target=self._probe_durations, args=(missing,), daemon=True).start()
+
+    def _probe_durations(self, logs):
+        """Длительность исходников для списка записей: ffprobe читает только заголовок, это быстро."""
+        ffprobe = render.tool(self.cfg["render"]["ffmpeg"], "ffprobe")
+        for lp in logs:
+            try:
+                r = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                    str(rerender_paths([lp])[0])], capture_output=True, text=True, timeout=10,
+                                   creationflags=render.CREATE_NO_WINDOW)
+                sec = round(float(r.stdout.strip()))
+                self.durations[str(lp)] = (f"{sec // 3600}:{sec // 60 % 60:02d}:{sec % 60:02d}" if sec >= 3600
+                                           else f"{sec // 60}:{sec % 60:02d}")
+            except Exception:  # исходника нет, ffprobe не нашёлся — просто прочерк
+                self.durations[str(lp)] = "—"
+
+        def done():
+            self.probing = False
+            if self.tree.winfo_exists():
+                self.refresh_list()
+        self.root.after(0, done)
 
     def selected(self):
         out = []
