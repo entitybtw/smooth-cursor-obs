@@ -72,6 +72,10 @@ def check_click_animation():
     held = render.click_curve(np.array([80, 1500, 2080, 2400]), 320, 2000)  # держали кнопку 2 с
     assert held[0] == 1 and held[1] == 1 and 0 < held[2] < 1 and held[3] == 0, ("удержание", held)
     assert render.click_curve(np.array(5000.0), 320, np.inf) == 1, "пока кнопка зажата — наклон держится"
+    # клик заранее: в момент нажатия курсор сжат сильнее всего, начал вжиматься до него, отпускает — после отпускания
+    tf = np.arange(0, 3000, 10.0)
+    p = render.click_press(tf, np.array([1000.0, 2000.0]), np.array([50.0, np.inf]), 320)
+    assert p[tf == 1000][0] == 1 and 0 < p[tf == 950][0] < 1 and p[tf == 900][0] == 0 and p[tf == 1050][0] == 1         and p[tf == 1100][0] < 1 and p[tf == 2500][0] == 1, ("клик заранее", p[88:112])
     v = np.array([2.0, 0.05, 0, -2.0])  # ширин кадра в секунду, плюс — вправо
     deg = render.tilt_angle(v, 5, 5)  # вправо — на 5° вправо, влево — на 5° влево
     assert abs(deg[0] + 5) < 0.1 and -1 < deg[1] < 0 and deg[2] == 0 and abs(deg[3] - 5) < 0.1, \

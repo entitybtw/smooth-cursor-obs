@@ -48,6 +48,15 @@ def click_curve(age_ms, duration_ms, press_ms=0):
     return np.where(age < attack, rise, np.where(age < attack + hold, 1.0, 1 - v * v * (3 - 2 * v)))
 
 
+def click_press(tf, downs, lens, duration_ms):
+    """Сила анимации клика по кадрам (моменты tf, мс): рендер знает клики заранее, поэтому курсор начинает вжиматься
+    до нажатия, и сильнее всего он сжат и наклонён ровно в момент клика. Отпускать начинает, когда отпустили кнопку.
+    downs — моменты нажатий (по возрастанию), lens — сколько держали (inf — не отпустили)."""
+    lead = 0.25 * duration_ms  # вжимание у click_curve — первая четверть длительности
+    last = np.maximum(np.searchsorted(downs, tf + lead, "right") - 1, 0)
+    return click_curve(tf + lead - downs[last], duration_ms, lens[last] + lead)
+
+
 def press_sprite(img, hot, scale, deg):
     """Сжатие и поворот против часовой вокруг hotspot: точка клика остаётся на месте. Возвращает (картинка, hotspot)."""
     x0, y0, x1, y1 = img.getbbox() or (0, 0, *img.size)
@@ -650,7 +659,7 @@ def cursor_track(lg, info, cfg, ghost_ms=()):
         return kx * (a * x + b * y + c), ky * (d * x + e * y + f)
 
     track = smoothing.frame_track(lg, fps, info["frames"], cfg["smoothing"], sync_offset(cfg, fps), ghost_ms)
-    press = click_curve(track["click_age"], rc["click_ms"], track["press_len"]) if rc["click_animation"] else np.zeros(len(track["x"]))
+    press = click_press(track["t"], track["downs"], track["press_lens"], rc["click_ms"]) if rc["click_animation"]         else np.zeros(len(track["x"]))
     track["press"], track["level"] = press, np.round(press * (CLICK_STEPS - 1)).astype(int)
     cl, ct, cr, cb = mp["crop"]  # за кропом источника курсора на видео нет
     track["visible"] &= (track["x"] >= cl) & (track["x"] < cr) & (track["y"] >= ct) & (track["y"] < cb)
