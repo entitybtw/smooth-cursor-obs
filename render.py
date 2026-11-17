@@ -773,7 +773,10 @@ def render(video, log_path, cfg, progress=None, clip=None, hwaccel=True):
         pf = info["pix_fmt"]
         sub = "444" if "444" in pf else "422" if "422" in pf else "420"
         deep = "10" in pf or "12" in pf or "16" in pf
-        chain = [f"[0:v]format=yuv{sub}p{'10le' if deep else ''},sendcmd=f=cmds.txt[v0]"]
+        # pc: ffmpeg до 7 декодирует полный диапазон как yuvj, и format=yuv…p молча сжал бы его в ограниченный (цвет
+        # бледнеет, а метка остаётся pc). Явный pc → pc — пересчёта нет; в новом ffmpeg это просто ничего не делает
+        keep = "scale=in_range=pc:out_range=pc," if info["range"] == "pc" else ""
+        chain = [f"[0:v]{keep}format=yuv{sub}p{'10le' if deep else ''},sendcmd=f=cmds.txt[v0]"]
         for i, (name, *_) in enumerate(slots, 1):
             inp = f"[{i}:v]"
             if name == "blur":
