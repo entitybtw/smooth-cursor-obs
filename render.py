@@ -310,6 +310,17 @@ def out_ext(codec):
     return ".mov" if codec.startswith("prores") else ".mp4"
 
 
+def disk_check(part, frac, out):
+    """Рендер сделан на долю frac: если по нынешнему темпу файл не влезет на диск — стоп сразу, а не через час."""
+    size = part.stat().st_size if part.exists() else 0
+    need, free = size / max(frac, 1e-6) * 1.05 - size, shutil.disk_usage(part.parent).free
+    if need > free:
+        old = t(" (старый {} — {:.0f} ГБ, его можно удалить)").format(out.name, out.stat().st_size / 1e9) \
+            if out.exists() else ""
+        raise RuntimeError(t("не хватит места на диске: рендеру нужно ещё ≈ {:.0f} ГБ, свободно {:.0f} ГБ{}. "
+                             "Освободи место или выбери кодек полегче").format(need / 1e9, free / 1e9, old))
+
+
 def smooth_file(video):
     """Готовый результат записи: самый свежий из _smooth.mp4 и _smooth.mov; нет ни одного — путь .mp4."""
     found = [p for p in (video.with_name(video.stem + "_smooth" + e) for e in (".mp4", ".mov")) if p.exists()]
@@ -825,10 +836,15 @@ def render(video, log_path, cfg, progress=None, clip=None, hwaccel=True):
 
                 threading.Thread(target=feed, daemon=True).start()
             try:
+                next_check = 0.02
                 for line in p.stdout:
                     if line.startswith("out_time_us=") and line[12:].strip().isdigit():
-                        if progress(int(line[12:]) / 1e4 / duration):
+                        pct = int(line[12:]) / 1e4 / duration
+                        if progress(pct):
                             raise RuntimeError(t("рендер отменён"))
+                        if pct / 100 >= next_check:  # хватит ли места — видно по первым процентам, а не через час
+                            next_check += 0.05
+                            disk_check(part, pct / 100, out)
                 if failed:
                     raise failed[0]
                 if p.wait():

@@ -408,6 +408,8 @@ EN.update({
     "осталось ≈ {} мин": "≈ {} min left",
     "осталось ≈ {} ч {} мин": "≈ {} h {} min left",
     "осталось ≈ {} ч": "≈ {} h left",
+    " (старый {} — {:.0f} ГБ, его можно удалить)": " (old {} is {:.0f} GB, you can delete it)",
+    "не хватит места на диске: рендеру нужно ещё ≈ {:.0f} ГБ, свободно {:.0f} ГБ{}. Освободи место или выбери кодек полегче": "not enough disk space: the render needs ≈ {:.0f} GB more, {:.0f} GB free{}. Free up space or pick a lighter codec",
     " · ещё {}": " · {} more",
     "открыть видео ›": "open video ›",
     "подробности в журнале": "details in the log",
