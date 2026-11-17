@@ -193,7 +193,7 @@ def check_blank_retry():
         tmp = Path(tmp)
         src, black, bad = tmp / "src.mp4", tmp / "black.mp4", tmp / "bad.mp4"
         for path, vf in ((src, "null"), (black, "lutyuv=y=16:u=128:v=128"),  # настоящий чёрный в tv-диапазоне
-                         (bad, "lutyuv=y=0:u=0:v=0,drawbox=x=300:y=150:w=30:h=40:c=white:t=fill")):  # ноль + курсор
+                         (bad, "geq=lum=0:cb=0:cr=0,drawbox=x=300:y=150:w=30:h=40:c=white:t=fill")):  # ноль + курсор (lutyuv в ffmpeg 4 обрезал бы до 16)
             subprocess.run([ff, "-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=640x360:r=30:d=2", "-vf", vf,
                             "-pix_fmt", "yuv420p", "-color_range", "tv", str(path)], check=True)
         assert not render.blank_frames(ff, src) and not render.blank_frames(ff, black), "обычная картинка — не пустая"
