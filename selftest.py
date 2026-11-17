@@ -715,6 +715,8 @@ def check_render_toast():
     assert [render.eta_text(s) for s in (None, 3, 42, 60, 83, 700)] == [
         "считаю время…", "почти готово", "осталось ≈ 40 с", "осталось ≈ 1 мин", "осталось ≈ 1 мин 20 с",
         "осталось ≈ 12 мин"], [render.eta_text(s) for s in (None, 3, 42, 60, 83, 700)]
+    assert [render.eta_text(s) for s in (3569, 3600, 6300)] == [  # больше часа — не «105 мин»
+        "осталось ≈ 59 мин", "осталось ≈ 1 ч", "осталось ≈ 1 ч 45 мин"], [render.eta_text(s) for s in (3569, 3600, 6300)]
 
     def mon(w, h, dpi, work=None, left=0, top=0):
         return {"left": left, "top": top, "width": w, "height": h, "dpi": dpi,

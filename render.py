@@ -679,7 +679,10 @@ def eta_text(seconds):
     if seconds < 600:
         m, s = divmod(round(seconds / 10) * 10, 60)
         return t("осталось ≈ {} мин {} с").format(m, s) if s else t("осталось ≈ {} мин").format(m)
-    return t("осталось ≈ {} мин").format(round(seconds / 60))
+    if round(seconds / 60) < 60:
+        return t("осталось ≈ {} мин").format(round(seconds / 60))
+    h, m = divmod(round(seconds / 300) * 5, 60)  # больше часа — с точностью до 5 мин
+    return t("осталось ≈ {} ч {} мин").format(h, m) if m else t("осталось ≈ {} ч").format(h)
 
 
 def blank_frames(ffmpeg, result):
@@ -687,8 +690,8 @@ def blank_frames(ffmpeg, result):
     чёрный — это Y=16, так что средняя яркость ниже 8 у настоящей картинки не бывает. Читаем только ключевые кадры:
     один быстрый проход без исходника.
     ponytail: сбой, начавшийся после последнего ключевого кадра (обычно последние ~10 с), не заметим."""
-    r = subprocess.run([ffmpeg, "-v", "error", "-skip_frame", "nokey", "-i", str(result), "-vf",
-                        "scale=64:36,format=yuv420p", "-fps_mode", "passthrough", "-f", "rawvideo", "-"],
+    r = subprocess.run([ffmpeg, "-v", "error", "-discard", "nokey", "-skip_frame", "nokey", "-i", str(result), "-vf",
+                        "scale=64:36,format=yuv420p", fps_option(ffmpeg), "passthrough", "-f", "rawvideo", "-"],
                        capture_output=True, creationflags=CREATE_NO_WINDOW)
     frames = np.frombuffer(r.stdout, np.uint8)
     frames = frames[:len(frames) // 3456 * 3456].reshape(-1, 3456)[:, :2304]  # кадр 64×36 yuv420p; Y — первые 2304 байта
