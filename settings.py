@@ -30,6 +30,7 @@ DEFAULTS = {
         "codec": "auto",          # auto — лучший доступный: hevc_nvenc → hevc_amf → hevc_qsv → libx264
         "cq": 18,
         "prores": "hq",           # профиль, если кодек ProRes (.mov): proxy | lt | 422 | hq | 4444
+        "prores_fast": True,      # ProRes через prores_aw: в 2,5–5× быстрее prores_ks, качество то же (VMAF ±0,3)
         "preset": "p5",
         "cursor_scale": 1.0,
         "cursor_theme": "",       # "" — как в системе, "scheme:<имя>" — схема курсоров Windows, или путь к своему .cur

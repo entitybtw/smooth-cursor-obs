@@ -2231,6 +2231,8 @@ class App:
                                             "4444": "4444"}).grid(row=1, column=1, columnspan=2, sticky="w")
         self.lbl(g, t("Файл .mov; качество задаёт профиль."), "small", MUTE).grid(
             row=2, column=0, columnspan=3, sticky="w")
+        self.toggle_row(g, "Быстрый ProRes — рендер в 2–5× быстрее", "render.prores_fast").grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
         pro = set(g.winfo_children()) - before - std
         codec_changed(self.cfg["render"]["codec"])
         g, _ = self.section(l, "Дополнительно")

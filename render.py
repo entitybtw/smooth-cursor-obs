@@ -732,6 +732,8 @@ def render(video, log_path, cfg, progress=None, clip=None, hwaccel=True):
     rc = cfg["render"]
     ffmpeg, ffprobe = tool(rc["ffmpeg"], "ffmpeg"), tool(rc["ffmpeg"], "ffprobe")
     codec = pick_encoder(ffmpeg, rc["codec"])
+    if codec == "prores_ks" and rc["prores_fast"] and encoder_works(ffmpeg, "prores_aw"):
+        codec = "prores_aw"  # тот же ProRes, кодирует в разы быстрее; prores_ks почти всё время рендера и съедал
     info = probe(ffprobe, video)
     lg = json.loads(Path(log_path).read_text(encoding="utf-8"))
     info["dw"], info["dh"] = lg["display"]["width"], lg["display"]["height"]
