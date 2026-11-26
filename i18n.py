@@ -266,6 +266,13 @@ EN.update({
     "каким курсором рисовать видео, и после записи тоже. Свой .cur — стрелка, остальное — рядом.":
         "which cursor the video uses, even after recording. Own .cur — the arrow, rest from its folder.",
     "Курсор": "Cursor", "Размер": "Size", "Наклон в движении": "Lean in motion", "Вправо": "Right", "Влево": "Left",
+    "Автозум на курсор": "Auto-zoom on cursor", "Приближение": "Zoom", "Стабилизация": "Stabilization",
+    "во сколько раз приближать кадр. Курсор держится ближе к центру, у краёв камера упирается в границу.":
+        "how much to zoom the frame. The cursor stays near the centre; at the screen edges the camera stops at the border.",
+    "мс: больше — камера плавнее и «ленивее» следует за курсором, меньше — точнее поспевает.":
+        "ms: higher — the camera follows the cursor more smoothly and lazily, lower — catches up more precisely.",
+    "Кадр плавно приближается и едет за курсором, как в Screen Studio. Считается при рендере и в превью.":
+        "the frame zooms in smoothly and follows the cursor like in Screen Studio. Applied at render and in preview.",
     "поворот, когда курсор едет вправо. 45° — зеркально покою, минус — назад, 0 — выключено.":
         "lean while moving right. 45° mirrors the resting pose, minus leans back, 0 is off.",
     "поворот, когда курсор едет влево. Минус — назад, как от инерции, 0 — выключено.":

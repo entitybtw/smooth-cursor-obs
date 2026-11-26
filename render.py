@@ -444,13 +444,14 @@ def piecewise(vals, n0, fps, t0):
     return e
 
 
-def write_commands(path, track, info, slots, clip, blur):
+def write_commands(path, track, info, slots, clip, blur, cam=None):
     """sendcmd: на каждом кадре двигаем только изменившиеся overlay. clip = (начало, конец) в секундах.
     blur — {кадр: левый верхний угол} слоя с курсором (см. blur_plan); спрайт — только отладочный сырой курсор
-    (raw_vx — уже в пикселях видео)."""
+    (raw_vx — уже в пикселях видео). cam — окно автозума (camera_path): его x/y тоже двигаем командами."""
     hot = {name: (hx, hy) for name, _, hx, hy in slots if name != "blur"}
     fps, (t0, t1) = info["fps"], clip
     state = {name: None for name in hot}
+    cam_last = [None, None]
     pos = lambda k: blur.get(k, (HIDE, 0))
     empty = True
     with open(path, "w", encoding="ascii") as f:
@@ -476,6 +477,12 @@ def write_commands(path, track, info, slots, clip, blur):
                 for axis in (0, 1):
                     vals = [pos(k)[axis] for k in range(n - BLUR_LAG, n + 1)]
                     cmds.append(f"overlay@blur {'xy'[axis]} '{piecewise(vals, n - BLUR_LAG, fps, t0)}'")
+            if cam is not None:
+                for j, axis in enumerate("xy"):
+                    val = int(cam["o" + axis][n])
+                    if cam_last[j] != val:
+                        cmds.append(f"crop@cam {axis} {val}")
+                        cam_last[j] = val
             if cmds:
                 # ffmpeg отсчитывает время кадров от начала файла (или от -ss). Окно в 1 с: команда сработает
                 # и при выпавших кадрах, а sendcmd не будет перебирать старые интервалы.
@@ -681,6 +688,84 @@ def cursor_track(lg, info, cfg, ghost_ms=()):
     return track, to_video, (cl, ct, cr, cb), size
 
 
+def _gauss_smooth(v, sigma):
+    """Гауссово сглаживание ряда по времени без запаздывания (края — по крайним значениям)."""
+    v = np.asarray(v, float)
+    if sigma <= 0 or len(v) < 2:
+        return v.copy()
+    h = int(math.ceil(3 * sigma))
+    x = np.arange(-h, h + 1) / sigma
+    k = np.exp(-0.5 * x * x)
+    k /= k.sum()
+    pad = np.pad(v, h, mode="edge")
+    return np.convolve(pad, k, mode="same")[h:h + len(v)]
+
+
+def camera_path(track, info, rc):
+    """Куда смотреть автозуму: левый верхний угол окна кропа (ox, oy) по кадрам и размер окна (cw, ch).
+
+    Камера едет за курсором, но сглажена сильнее него самого — кадр «стабилизирован» на курсоре. У краёв экрана
+    камера упирается, чтобы окно не вышло за кадр; при быстром движении подтягивается, чтобы курсор не выехал
+    за окно. None — автозум выключен или приближать нечего."""
+    W, H = info["w"], info["h"]
+    zf = max(1.0, float(rc.get("zoom_factor", 1.6) or 1.0))
+    if not rc.get("zoom") or zf <= 1.01 or W < 16 or H < 16:
+        return None
+    cw, ch = int(round(W / zf)), int(round(H / zf))
+    cw -= cw % 2
+    ch -= ch % 2
+    cw, ch = max(2, min(cw, W - W % 2)), max(2, min(ch, H - H % 2))
+    vis = np.asarray(track["visible"], bool)
+    vx = np.asarray(track["vx"], float)
+    vy = np.asarray(track["vy"], float)
+    # цель — сглаженный курсор; вне кадра держим последнюю известную точку, чтобы не уезжать в пустоту
+    cx = np.where(vis, vx, np.nan)
+    cy = np.where(vis, vy, np.nan)
+
+    def ffill(a):
+        idx = np.where(~np.isnan(a))[0]
+        if not len(idx):
+            return None
+        a = a.copy()
+        a[:idx[0]] = a[idx[0]]
+        for i in range(idx[0] + 1, len(a)):
+            if np.isnan(a[i]):
+                a[i] = a[i - 1]
+        return a
+
+    fc_x, fc_y = ffill(cx), ffill(cy)
+    if fc_x is None:
+        fc_x = np.full(len(vx), W / 2)
+        fc_y = np.full(len(vy), H / 2)
+    hw, hh = cw / 2, ch / 2
+    # «мёртвая зона» камеры: пока курсор в центральной части окна, кадр стоит на месте; вышел за неё — камера
+    # плавно подтягивается, держа курсор в комфортной зоне. Так кадр «стабилизирован», а не дёргается за рукой.
+    dzx, dzy = hw * 0.35, hh * 0.35
+
+    def follow(target, dz):
+        out = np.empty_like(target)
+        out[0] = target[0]
+        for k in range(1, len(target)):
+            out[k] = min(max(out[k - 1], target[k] - dz), target[k] + dz)
+        return out
+
+    sigma = max(0.0, float(rc.get("zoom_smooth_ms", 400) or 0) / 1000 * info["fps"])
+    sx = _gauss_smooth(follow(fc_x, dzx), sigma)
+    sy = _gauss_smooth(follow(fc_y, dzy), sigma)
+    # гарантия: курсор не вылетает за окно даже при очень сильной стабилизации
+    sx = np.where(vis, np.clip(sx, vx - (hw - 4), vx + (hw - 4)), sx)
+    sy = np.where(vis, np.clip(sy, vy - (hh - 4), vy + (hh - 4)), sy)
+    camx = np.clip(sx, hw, W - hw)  # окно не выходит за кадр
+    camy = np.clip(sy, hh, H - hh)
+    ox = np.round(camx - hw).astype(int)
+    oy = np.round(camy - hh).astype(int)
+    ox -= ox % 2
+    oy -= oy % 2
+    ox = np.clip(ox, 0, max(0, W - cw))
+    oy = np.clip(oy, 0, max(0, H - ch))
+    return {"cw": cw, "ch": ch, "ox": ox, "oy": oy}
+
+
 def eta_left(start_pct, pct, elapsed):
     """Сколько секунд осталось при той же скорости; None — ещё рано судить."""
     if pct - start_pct < 1 or elapsed < 1:
@@ -752,6 +837,7 @@ def render(video, log_path, cfg, progress=None, clip=None, hwaccel=True):
     ghost_ms = [1000 / fps * rc["blur_length"] * (i + 1) / len(ghost_alphas(rc))
                 for i in range(len(ghost_alphas(rc)))] if rc["motion_blur"] and not accurate else []
     track, to_video, (cl, ct, cr, cb), size = cursor_track(lg, info, cfg, ghost_ms)
+    cam = camera_path(track, info, rc)
     vis, types = track["visible"], lg["types"]
     used = sorted({types[k] for k in np.unique(track["type"][vis])} | {"arrow"}, key=types.index)
     mv = vis & (track["morph"] > 0)
@@ -790,7 +876,7 @@ def render(video, log_path, cfg, progress=None, clip=None, hwaccel=True):
         blur_in = ["-f", "rawvideo", "-pixel_format", "rgba", "-video_size", f"{pw}x{ph}", "-framerate",
                    info["rate"], "-i", "pipe:0"]
         blur_off = (f0 - 0.5) / fps - span[0]
-        write_commands(work / "cmds.txt", track, info, slots, span, blur)
+        write_commands(work / "cmds.txt", track, info, slots, span, blur, cam)
         # Накладываем прямо в YUV исходника: через RGB (format=auto) цвета видео чуть съезжают
         pf = info["pix_fmt"]
         sub = "444" if "444" in pf else "422" if "422" in pf else "420"
@@ -809,6 +895,13 @@ def render(video, log_path, cfg, progress=None, clip=None, hwaccel=True):
             chain.append(f"[v{i - 1}]{inp}overlay@{name}=x={HIDE}:y=0:format=yuv{sub}{'p10' if deep else ''}"
                          f":eof_action=repeat{':shortest=1' if name == 'blur' else ''}[v{i}]")  # видео кончилось — всё
         last, rng = f"[v{len(slots)}]", info["range"]
+        if cam is not None:
+            # автозум: вырезаем окно вокруг курсора и растягиваем обратно в полный кадр. Окно двигаем командами
+            # sendcmd (crop@cam x/y), поэтому всё наложенное ниже (курсор, шлейф) приближается вместе с кадром.
+            i0 = min(f0, len(cam["ox"]) - 1)
+            chain.append(f"{last}crop@cam=w={cam['cw']}:h={cam['ch']}:x={int(cam['ox'][i0])}:y={int(cam['oy'][i0])},"
+                         f"scale={info['w']}:{info['h']}:flags=lanczos,setsar=1[vz]")
+            last = "[vz]"
         if codec.startswith("prores") and rng == "pc":  # ProRes — только ограниченный диапазон: пересчитываем
             chain.append(f"{last}scale=in_range=pc:out_range=tv[vtv]")
             last, rng = "[vtv]", "tv"

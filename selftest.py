@@ -718,6 +718,38 @@ def check_rec_quality():
     print("качество записи OBS: ок")
 
 
+def check_autozoom():
+    """Автозум: окно чётное и внутри кадра, курсор не вылезает, в мёртвой зоне камера стоит, рывок — плавно."""
+    W, H, n = 1920, 1080, 240
+    info = {"w": W, "h": H, "fps": 60.0, "frames": n}
+    vx, vy = np.full(n, 960.0), np.full(n, 540.0)
+    for i in range(60, 120):  # +100 px — внутри мёртвой зоны, кадр должен стоять
+        vx[i:] = 960 + 100 * (i - 59) / 60
+    vx[120:] = 1060.0
+    vx[180:] += 300  # рывок на 300 px — камера подтягивается, но плавно
+    track = {"visible": np.ones(n, bool), "vx": vx, "vy": vy}
+    rc = {"zoom": False, "zoom_factor": 1.6, "zoom_smooth_ms": 400}
+    assert render.camera_path(track, info, rc) is None, "выключенный автозум не должен строить камеру"
+    for zf in (1.2, 1.6, 2.5):
+        cam = render.camera_path(track, info, {**rc, "zoom": True, "zoom_factor": zf})
+        cw, ch = cam["cw"], cam["ch"]
+        ox, oy = cam["ox"], cam["oy"]
+        assert abs(cw - W / zf) <= 2 and abs(ch - H / zf) <= 2, (zf, cw, ch)
+        assert cw % 2 == 0 and ch % 2 == 0 and (ox % 2 == 0).all() and (oy % 2 == 0).all(), "окно/сдвиг нечётные"
+        assert (ox >= 0).all() and (oy >= 0).all() and (ox + cw <= W).all() and (oy + ch <= H).all(), "окно вышло за кадр"
+        inside = (vx >= ox) & (vx <= ox + cw) & (vy >= oy) & (vy <= oy + ch)
+        assert inside.all(), (zf, "курсор выехал за окно", np.flatnonzero(~inside)[:5])
+    cam = render.camera_path(track, info, {**rc, "zoom": True})
+    camx, camy = cam["ox"] + cam["cw"] / 2, cam["oy"] + cam["ch"] / 2
+    assert np.ptp(camx[60:120]) <= 2, ("в мёртвой зоне камера не должна ездить", np.ptp(camx[60:120]))
+    step = np.abs(np.diff(camx))
+    assert step[180:].max() < 15, ("рывок камеры вместо плавного подтягивания", step[180:].max())
+    assert vx[180] - camx[-1] > 150, ("камера должна подтягиваться за курсором", camx[-1])
+    assert render.camera_path(track, info, {**rc, "zoom": True, "zoom_smooth_ms": 0}) is not None, "0 мс — без стабилизации"
+    assert render.camera_path(track, info, {**rc, "zoom": True, "zoom_factor": 1.0}) is None, "×1 — приближать нечего"
+    print("автозум: окно, мёртвая зона, плавность: ок")
+
+
 def check_render_toast():
     """Плашка рендера: примерное время и угол экрана при разных экранах, масштабах и панели задач."""
     assert render.eta_left(0, 0.5, 5) is None and render.eta_left(10, 60, 0.5) is None, "рано судить"
@@ -1063,6 +1095,7 @@ if __name__ == "__main__":
     check_obs_transform()
     check_ae()
     check_blank_retry()
+    check_autozoom()
     check_render()
     check_colors()
     check_accurate_blur()

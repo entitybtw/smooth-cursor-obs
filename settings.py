@@ -53,6 +53,9 @@ DEFAULTS = {
         "shutter": 60,            # его выдержка, как на камере: 1/60 с
         "debug_raw": False,
         "export_keyframes": False,
+        "zoom": False,            # автозум: кадр приближается и едет за курсором (как в Screen Studio)
+        "zoom_factor": 1.6,       # во сколько раз приближать (1 — выключено)
+        "zoom_smooth_ms": 400,    # стабилизация камеры: больше — плавнее и «ленивее» следует за курсором
     },
     "ui": {"obs_fps": None, "folder": "", "auto_render": True, "rec_overlay": True, "overlay_pos": None, "preview_start": 0.0,
            "preview_len": 5.0, "lang": "ru", "with_obs": True, "tray": False,
